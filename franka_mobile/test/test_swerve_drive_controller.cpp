@@ -2,10 +2,12 @@
 
 #include <Eigen/Dense>
 #include <franka_mobile/detail/body_twist.hpp>
+#include <franka_mobile/detail/odometry_calibration.hpp>
 #include <franka_mobile/detail/swerve_command_limits.hpp>
 
 #include <array>
 #include <cmath>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -283,6 +285,89 @@ TEST(BodyTwistTest, WhenHeadingCrossesPiAssertTurnIsTheShortWay) {
   const Eigen::Vector3d twist = franka_mobile::detail::bodyTwist(
       p, yawRotation(M_PI - 0.01), p, yawRotation(-M_PI + 0.01), 0.02);
   EXPECT_NEAR(twist.z(), 1.0, kTol);
+}
+
+// ===========================================================================
+// Closed-loop calibration: the measured pose's steps, scaled
+// ===========================================================================
+
+struct PlanarPose {
+  double x, y, yaw;
+};
+
+// The calibrated pose after the measured poses, seeded at the first of them.
+static PlanarPose calibrate(const std::vector<PlanarPose>& measured,
+                            double linear_scale,
+                            double angular_scale) {
+  Eigen::Vector3d p(measured.front().x, measured.front().y, 0.0);
+  Eigen::Quaterniond q = yawRotation(measured.front().yaw);
+  for (size_t i = 1; i < measured.size(); ++i) {
+    const PlanarPose& a = measured[i - 1];
+    const PlanarPose& b = measured[i];
+    franka_mobile::detail::calibratedStep(Eigen::Vector3d(a.x, a.y, 0.0), yawRotation(a.yaw),
+                                          Eigen::Vector3d(b.x, b.y, 0.0), yawRotation(b.yaw),
+                                          linear_scale, angular_scale, p, q);
+  }
+  return {p.x(), p.y(), franka_mobile::detail::yawOf(q)};
+}
+
+// n steps of a straight drive of `distance` along `heading` from (x, y).
+static void appendDrive(std::vector<PlanarPose>& poses, double distance, size_t n) {
+  const PlanarPose start = poses.back();
+  for (size_t i = 1; i <= n; ++i) {
+    const double travelled = distance * static_cast<double>(i) / static_cast<double>(n);
+    poses.push_back({start.x + travelled * std::cos(start.yaw),
+                     start.y + travelled * std::sin(start.yaw), start.yaw});
+  }
+}
+
+// n steps of a turn in place by `turn`.
+static void appendTurn(std::vector<PlanarPose>& poses, double turn, size_t n) {
+  const PlanarPose start = poses.back();
+  for (size_t i = 1; i <= n; ++i) {
+    poses.push_back({start.x, start.y,
+                     std::remainder(start.yaw + turn * static_cast<double>(i) /
+                                                    static_cast<double>(n),
+                                    2.0 * M_PI)});
+  }
+}
+
+TEST(OdometryCalibrationTest, WhenScalesAreOneAssertCalibratedPoseIsTheMeasuredOne) {
+  // A drive, then a turn across +-pi, then an arc: the measured pose, unchanged.
+  std::vector<PlanarPose> measured{{0.3, -0.2, 2.8}};
+  appendDrive(measured, 1.0, 50);
+  appendTurn(measured, 1.0, 50);
+  for (int i = 1; i <= 50; ++i) {
+    const PlanarPose& last = measured.back();
+    measured.push_back({last.x + 0.01 * std::cos(last.yaw), last.y + 0.01 * std::sin(last.yaw),
+                        std::remainder(last.yaw + 0.02, 2.0 * M_PI)});
+  }
+  const PlanarPose calibrated = calibrate(measured, 1.0, 1.0);
+  EXPECT_NEAR(calibrated.x, measured.back().x, 1e-9);
+  EXPECT_NEAR(calibrated.y, measured.back().y, 1e-9);
+  EXPECT_NEAR(std::remainder(calibrated.yaw - measured.back().yaw, 2.0 * M_PI), 0.0, 1e-9);
+}
+
+TEST(OdometryCalibrationTest, WhenDrivingStraightAssertDistanceIsScaled) {
+  std::vector<PlanarPose> measured{{1.0, 2.0, M_PI / 6.0}};
+  appendDrive(measured, 1.0, 100);
+  const PlanarPose calibrated = calibrate(measured, 1.014, 1.0);
+  EXPECT_NEAR(calibrated.x, 1.0 + 1.014 * std::cos(M_PI / 6.0), 1e-9);
+  EXPECT_NEAR(calibrated.y, 2.0 + 1.014 * std::sin(M_PI / 6.0), 1e-9);
+  EXPECT_NEAR(calibrated.yaw, M_PI / 6.0, 1e-9);
+}
+
+TEST(OdometryCalibrationTest, WhenTurningThenDrivingAssertDriveFollowsTheScaledHeading) {
+  // 90 deg measured is 91.035 deg true; the drive after it goes along the true heading.
+  const double angular_scale = 1.0115;
+  std::vector<PlanarPose> measured{{0.0, 0.0, 0.0}};
+  appendTurn(measured, M_PI_2, 90);
+  appendDrive(measured, 1.0, 100);
+  const PlanarPose calibrated = calibrate(measured, 1.0, angular_scale);
+  const double heading = angular_scale * M_PI_2;
+  EXPECT_NEAR(calibrated.yaw, heading, 1e-9);
+  EXPECT_NEAR(calibrated.x, std::cos(heading), 1e-9);
+  EXPECT_NEAR(calibrated.y, std::sin(heading), 1e-9);
 }
 
 // ===========================================================================

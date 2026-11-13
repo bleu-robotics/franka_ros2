@@ -70,6 +70,8 @@ class SwerveDriveController : public controller_interface::ChainableControllerIn
   std::string tf_frame_id_ = "";
   std::string base_link_frame_id_ = "";
   bool odom_open_loop_ = false;
+  double odom_linear_scale_ = 1.0;
+  double odom_angular_scale_ = 1.0;
   bool publish_limited_velocity_ = true;  // on cmd_vel_out
   bool enable_odom_tf_msg_ = true;
   bool enable_odom_nav_msg_ = true;
@@ -111,7 +113,12 @@ class SwerveDriveController : public controller_interface::ChainableControllerIn
   // First update after activation re-seeds the odometry's start, so that the inactive gap is
   // neither integrated into the open-loop pose nor differenced into the closed-loop twist.
   bool reset_odometry_timestamp_{false};
-  // closed loop: the pose and time the twist is differenced against, the last publish's
+  // closed loop: the measured pose at the last tick, and the calibrated pose it advances
+  Eigen::Vector3d measured_p_;
+  Eigen::Quaterniond measured_q_;
+  Eigen::Vector3d calibrated_p_;
+  Eigen::Quaterniond calibrated_q_;
+  // closed loop: the calibrated pose and time the twist is differenced against, the last publish's
   Eigen::Vector3d p_;
   Eigen::Quaterniond q_;
   rclcpp::Time twist_start_time_;
