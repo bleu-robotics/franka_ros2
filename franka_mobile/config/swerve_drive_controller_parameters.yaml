@@ -27,7 +27,25 @@ swerve_drive_controller:
   odom_open_loop: {
     type: bool,
     default_value: false,
-    description: "If true, the odometry integrates the command/reference twist. If false, it is the base pose from the state interfaces, and its twist (in the base frame) that pose differenced over each publish period.",
+    description: "If true, the odometry integrates the command/reference twist. If false, it is the base pose from the state interfaces, calibrated by odom_linear_scale and odom_angular_scale, and its twist (in the base frame) that pose differenced over each publish period.",
+  }
+
+  odom_linear_scale: {
+    type: double,
+    default_value: 1.0,
+    description: "Closed loop only: true distance over the distance the measured pose travels, applied to each of its steps in the base frame (e.g. measured against lidar or motion capture). 1 means none.",
+    validation: {
+      gt<>: [0.0]
+    }
+  }
+
+  odom_angular_scale: {
+    type: double,
+    default_value: 1.0,
+    description: "Closed loop only: true turn over the turn of the measured pose, applied to each of its steps. 1 means none.",
+    validation: {
+      gt<>: [0.0]
+    }
   }
 
   base_link_frame_id: {

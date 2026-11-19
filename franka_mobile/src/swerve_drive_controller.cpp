@@ -15,6 +15,7 @@
 #include <franka_mobile/swerve_drive_controller.hpp>
 
 #include <franka_mobile/detail/body_twist.hpp>
+#include <franka_mobile/detail/odometry_calibration.hpp>
 #include <franka_mobile/detail/swerve_command_limits.hpp>
 
 #include <algorithm>
@@ -126,24 +127,33 @@ controller_interface::return_type SwerveDriveController::update_and_write_comman
       wz = odometry_.getAngular();
       yaw = odometry_.getHeading();
     }
-  } else {  // pose from the state interface, twist by differencing it
-    Eigen::Quaterniond q;
-    Eigen::Vector3d p;
-    if (!franka_cartesian_pose_->getCurrentOrientationAndTranslation(q, p)) {
+  } else {  // pose from the state interface, calibrated; twist by differencing it
+    Eigen::Quaterniond measured_q;
+    Eigen::Vector3d measured_p;
+    if (!franka_cartesian_pose_->getCurrentOrientationAndTranslation(measured_q, measured_p)) {
       RCLCPP_ERROR(
           get_node()->get_logger(),
           "Failed to read the cartesian pose state interfaces; skipping closed-loop update");
       return controller_interface::return_type::ERROR;
     }
+    if (reset_odometry_timestamp_) {
+      calibrated_p_ = measured_p;
+      calibrated_q_ = measured_q;
+      twist_start_time_ = time;
+      p_ = measured_p;
+      q_ = measured_q;
+      reset_odometry_timestamp_ = false;
+    } else {
+      detail::calibratedStep(measured_p_, measured_q_, measured_p, measured_q, odom_linear_scale_,
+                             odom_angular_scale_, calibrated_p_, calibrated_q_);
+    }
+    measured_p_ = measured_p;
+    measured_q_ = measured_q;
+    const Eigen::Vector3d& p = calibrated_p_;
+    const Eigen::Quaterniond& q = calibrated_q_;
     x = p.x();
     y = p.y();
     yaw = detail::yawOf(q);
-    if (reset_odometry_timestamp_) {
-      twist_start_time_ = time;
-      p_ = p;
-      q_ = q;
-      reset_odometry_timestamp_ = false;
-    }
     // Over a publish period rather than one tick: a 1 kHz difference of the pose is mostly noise.
     if (should_publish) {
       const double dt = (time - twist_start_time_).seconds();
@@ -234,6 +244,10 @@ controller_interface::CallbackReturn SwerveDriveController::on_init() {
   previous_commands_[1].setZero();
   p_.setZero();
   q_.setIdentity();
+  measured_p_.setZero();
+  measured_q_.setIdentity();
+  calibrated_p_.setZero();
+  calibrated_q_.setIdentity();
 
   command_interface_prefix_ = auto_declare<std::string>("command_interface_prefix", "");
   state_interface_prefix_ = auto_declare<std::string>("state_interface_prefix", "");
@@ -302,6 +316,8 @@ controller_interface::CallbackReturn SwerveDriveController::on_configure(
   publish_limited_velocity_ = params_.publish_limited_velocity;
   cmd_vel_timeout_ = params_.cmd_vel_timeout;
   base_link_frame_id_ = params_.base_link_frame_id;
+  odom_linear_scale_ = params_.odom_linear_scale;
+  odom_angular_scale_ = params_.odom_angular_scale;
 
   const auto odom_velocity_rolling_window_size =
       static_cast<size_t>(params_.velocity_rolling_window_size);
@@ -356,8 +372,8 @@ controller_interface::CallbackReturn SwerveDriveController::on_activate(
   franka_cartesian_pose_->assign_loaned_state_interfaces(state_interfaces_);
   previous_commands_[0].setZero();
   previous_commands_[1].setZero();
-  // The odometry's start (the open-loop timestamp; the closed-loop pose and time the twist
-  // differences against) is re-seeded on the next update: its clock is the update time, which is
+  // The odometry's start (the open-loop timestamp; the closed-loop calibrated pose, and the pose
+  // and time the twist differences against) is re-seeded on the next update: its clock is the update time, which is
   // only known once updates run.
   reset_odometry_timestamp_ = true;
   return CallbackReturn::SUCCESS;

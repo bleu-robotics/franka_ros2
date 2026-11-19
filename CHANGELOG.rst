@@ -16,6 +16,11 @@ Requires libfranka >= 0.20.4 and franka_description >= 2.9.0 requires ROS 2 Jazz
   the base frame (``detail::bodyTwist``).
 * fix: that twist was a 1 ms difference of the pose, sampled at the publish rate, so mostly
   noise. It is now the pose's difference over the publish period.
+* feat: ``swerve_drive_controller``'s closed-loop odometry takes a calibration,
+  ``odom_linear_scale`` and ``odom_angular_scale`` (default 1, none): the true distance and turn
+  over the measured ones. Each step of the measured pose is scaled in the base frame and added
+  to a calibrated pose (``detail::calibratedStep``), which ``~/odom``, its twist and the TF
+  publish.
 
 v3.6.1 (2026-10-27)
 -------------------
